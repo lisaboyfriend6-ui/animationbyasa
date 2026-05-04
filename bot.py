@@ -1,18 +1,21 @@
-
 import logging
 import json
 import os
 import sqlite3
+import re
 from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
+# ========== FIXED: Absolute paths for Railway ==========
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CATALOG_FILE = os.path.join(BASE_DIR, "catalog.json")
+DATABASE_FILE = os.path.join(BASE_DIR, "bot.db")
+
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [7021228972, 5848609177]  # asa, vivan_saikyo
-CATALOG_FILE = "catalog.json"
-DATABASE_FILE = "bot.db"
+ADMIN_IDS = [7021228972, 5848609177]
 
 # Enable logging
 logging.basicConfig(
@@ -20,11 +23,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Database Functions ---
+# ========== FIXED: Database Functions (now includes series) ==========
 
 def init_db():
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
+    
+    # Users table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -32,6 +37,8 @@ def init_db():
             language TEXT DEFAULT 'en'
         )
     """)
+    
+    # Interest log table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS interest_log (
             log_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,6 +47,117 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    
+    # NEW: Series table (replaces catalog.json)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS series (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            description TEXT,
+            price TEXT,
+            link TEXT
+        )
+    """)
+    
+    # VIP bundle table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS vip_bundle (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            price TEXT,
+            description TEXT
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
+    
+    # Migrate existing catalog.json to database if needed
+    migrate_catalog_to_db()
+
+def migrate_catalog_to_db():
+    """Import existing catalog.json into database if series table is empty"""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    
+    # Check if series table has data
+    cursor.execute("SELECT COUNT(*) FROM series")
+    count = cursor.fetchone()[0]
+    
+    if count == 0 and os.path.exists(CATALOG_FILE):
+        try:
+            with open(CATALOG_FILE, 'r', encoding='utf-8') as f:
+                catalog = json.load(f)
+            
+            # Import series
+            for series in catalog.get('series', []):
+                cursor.execute("""
+                    INSERT OR REPLACE INTO series (id, title, description, price, link)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (series['id'], series['title'], series['description'], series['price'], series['link']))
+            
+            # Import VIP bundle
+            vip = catalog.get('vip_bundle', {})
+            cursor.execute("""
+                INSERT OR REPLACE INTO vip_bundle (id, price, description)
+                VALUES (1, ?, ?)
+            """, (vip.get('price', '25,000 MMK'), vip.get('description', '')))
+            
+            conn.commit()
+            logger.info("✅ Successfully migrated catalog.json to database")
+        except Exception as e:
+            logger.error(f"Failed to migrate catalog: {e}")
+    
+    conn.close()
+
+def get_all_series():
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title, description, price, link FROM series ORDER BY title")
+    series = [{'id': row[0], 'title': row[1], 'description': row[2], 'price': row[3], 'link': row[4]} for row in cursor.fetchall()]
+    conn.close()
+    return series
+
+def get_series_by_id(series_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title, description, price, link FROM series WHERE id = ?", (series_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {'id': row[0], 'title': row[1], 'description': row[2], 'price': row[3], 'link': row[4]}
+    return None
+
+def add_series(series_id, title, description, price, link):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO series (id, title, description, price, link)
+        VALUES (?, ?, ?, ?, ?)
+    """, (series_id, title, description, price, link))
+    conn.commit()
+    conn.close()
+
+def delete_series(series_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM series WHERE id = ?", (series_id,))
+    conn.commit()
+    conn.close()
+
+def get_vip_bundle():
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT price, description FROM vip_bundle WHERE id = 1")
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {'price': row[0], 'description': row[1]}
+    return {'price': '25,000 MMK', 'description': 'Get lifetime access to all series.'}
+
+def update_vip_bundle(price, description):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO vip_bundle (id, price, description) VALUES (1, ?, ?)", (price, description))
     conn.commit()
     conn.close()
 
@@ -91,19 +209,7 @@ def get_contact_clicks_per_series():
     conn.close()
     return results
 
-# --- Catalog Functions ---
-
-def load_catalog():
-    if not os.path.exists(CATALOG_FILE):
-        return {"series": [], "vip_bundle": {"price": "25,000 MMK", "description": ""}}
-    with open(CATALOG_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-def save_catalog(catalog_data):
-    with open(CATALOG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(catalog_data, f, indent=2, ensure_ascii=False)
-
-# --- Localization ---
+# ========== Localization (same as before) ==========
 
 LANGUAGES = {
     'en': {
@@ -219,12 +325,12 @@ def get_text(user_id, key, **kwargs):
     text = LANGUAGES.get(lang, LANGUAGES['en']).get(key, LANGUAGES['en'][key])
     return text.format(**kwargs)
 
-# --- Handlers ---
+# ========== Handlers ==========
 
 async def start(update: Update, context):
     user_id = update.effective_user.id
     username = update.effective_user.username
-    set_user_language(user_id, username, 'en') # Default to English for new users
+    set_user_language(user_id, username, 'en')
 
     keyboard = [
         [InlineKeyboardButton("English", callback_data="set_lang_en")],
@@ -261,9 +367,9 @@ async def main_menu(update: Update, context):
 
 async def browse_catalog(update: Update, context):
     user_id = update.effective_user.id
-    catalog = load_catalog()
+    series_list = get_all_series()
     series_buttons = []
-    for series in catalog['series']:
+    for series in series_list:
         series_buttons.append([InlineKeyboardButton(series['title'], callback_data=f"series_detail_{series['id']}")])
     series_buttons.append([InlineKeyboardButton(get_text(user_id, 'back_to_main_menu'), callback_data="main_menu")])
     reply_markup = InlineKeyboardMarkup(series_buttons)
@@ -273,8 +379,9 @@ async def series_detail(update: Update, context):
     query = update.callback_query
     user_id = query.from_user.id
     series_id = query.data.split('_')[-1]
-    catalog = load_catalog()
-    series = next((s for s in catalog['series'] if s['id'] == series_id), None)
+    
+    # FIXED: Get series from database
+    series = get_series_by_id(series_id)
 
     if series:
         text = get_text(user_id, 'series_details',
@@ -289,21 +396,25 @@ async def series_detail(update: Update, context):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
         log_interest(user_id, series_id)
+        
         # Notify admins
         for admin_id in ADMIN_IDS:
-            admin_username = (await context.bot.get_chat(user_id)).username or user_id
-            await context.bot.send_message(chat_id=admin_id,
-                                           text=get_text(admin_id, 'admin_interest_notification',
-                                                         username=admin_username,
-                                                         user_id=user_id,
-                                                         series_title=series['title']))
+            try:
+                admin_username = query.from_user.username or str(user_id)
+                await context.bot.send_message(chat_id=admin_id,
+                                               text=get_text(admin_id, 'admin_interest_notification',
+                                                             username=admin_username,
+                                                             user_id=user_id,
+                                                             series_title=series['title']))
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id}: {e}")
     else:
+        logger.error(f"Series not found for ID: {series_id}")
         await query.edit_message_text(text=get_text(user_id, 'series_not_found'))
 
 async def vip_bundle(update: Update, context):
     user_id = update.effective_user.id
-    catalog = load_catalog()
-    vip_info = catalog['vip_bundle']
+    vip_info = get_vip_bundle()
     text = get_text(user_id, 'vip_details',
                     description=vip_info['description'],
                     price=vip_info['price'])
@@ -314,14 +425,17 @@ async def vip_bundle(update: Update, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
     log_interest(user_id, "vip_bundle")
-    # Notify admins
+    
     for admin_id in ADMIN_IDS:
-        admin_username = (await context.bot.get_chat(user_id)).username or user_id
-        await context.bot.send_message(chat_id=admin_id,
-                                       text=get_text(admin_id, 'admin_interest_notification',
-                                                     username=admin_username,
-                                                     user_id=user_id,
-                                                     series_title="VIP Bundle"))
+        try:
+            admin_username = update.callback_query.from_user.username or str(user_id)
+            await context.bot.send_message(chat_id=admin_id,
+                                           text=get_text(admin_id, 'admin_interest_notification',
+                                                         username=admin_username,
+                                                         user_id=user_id,
+                                                         series_title="VIP Bundle"))
+        except Exception as e:
+            logger.error(f"Failed to notify admin {admin_id}: {e}")
 
 async def how_to_purchase(update: Update, context):
     user_id = update.effective_user.id
@@ -353,11 +467,7 @@ async def change_language_menu(update: Update, context):
     await update.callback_query.edit_message_text(text=get_text(user_id, 'select_language'), reply_markup=reply_markup)
 
 async def help_menu(update: Update, context):
-    user_id = update.effective_user.id
-    # For simplicity, help just redirects to main menu for now. Can be expanded.
     await main_menu(update, context)
-
-
 
 async def handle_message_input(update: Update, context):
     user_id = update.effective_user.id
@@ -369,7 +479,6 @@ async def handle_message_input(update: Update, context):
     elif admin_state:
         await handle_admin_input(update, context)
     else:
-        # Default behavior if no specific state is active
         await update.message.reply_text(get_text(user_id, 'invalid_input'))
 
 async def search_command(update: Update, context):
@@ -377,92 +486,12 @@ async def search_command(update: Update, context):
     await update.message.reply_text(get_text(user_id, 'search_prompt'))
     context.user_data['state'] = 'awaiting_search_query'
 
-async def handle_admin_input(update: Update, context):
-    user_id = update.effective_user.id
-    admin_state = context.user_data.get("admin_state")
-    input_text = update.message.text
-
-    catalog = load_catalog()
-
-    if admin_state == 'add_series_title':
-        context.user_data['new_series'] = {'id': input_text.lower().replace(' ', '_'), 'title': input_text}
-        context.user_data['admin_state'] = 'add_series_description'
-        await update.message.reply_text(get_text(user_id, 'enter_series_description'))
-    elif admin_state == 'add_series_description':
-        context.user_data['new_series']['description'] = input_text
-        context.user_data['admin_state'] = 'add_series_price'
-        await update.message.reply_text(get_text(user_id, 'enter_series_price'))
-    elif admin_state == 'add_series_price':
-        context.user_data['new_series']['price'] = input_text
-        context.user_data['admin_state'] = 'add_series_link'
-        await update.message.reply_text(get_text(user_id, 'enter_series_link'))
-    elif admin_state == 'add_series_link':
-        context.user_data['new_series']['link'] = input_text
-        catalog['series'].append(context.user_data['new_series'])
-        save_catalog(catalog)
-        await update.message.reply_text(get_text(user_id, 'series_added', title=context.user_data['new_series']['title']))
-        context.user_data['admin_state'] = None
-        await admin_panel(update, context)
-
-    elif admin_state == 'edit_series_description':
-        series_id = context.user_data['current_series_id']
-        for s in catalog['series']:
-            if s['id'] == series_id:
-                s['description'] = input_text
-                break
-        context.user_data['admin_state'] = 'edit_series_price'
-        await update.message.reply_text(get_text(user_id, 'enter_series_price'))
-    elif admin_state == 'edit_series_price':
-        series_id = context.user_data['current_series_id']
-        for s in catalog['series']:
-            if s['id'] == series_id:
-                s['price'] = input_text
-                break
-        context.user_data['admin_state'] = 'edit_series_link'
-        await update.message.reply_text(get_text(user_id, 'enter_series_link'))
-    elif admin_state == 'edit_series_link':
-        series_id = context.user_data['current_series_id']
-        for s in catalog['series']:
-            if s['id'] == series_id:
-                s['link'] = input_text
-                break
-        save_catalog(catalog)
-        await update.message.reply_text(get_text(user_id, 'series_added', title=context.user_data['current_series_data']['title'])) # Re-using series_added text
-        context.user_data['admin_state'] = None
-        context.user_data['current_series_id'] = None
-        context.user_data['current_series_data'] = None
-        await admin_panel(update, context)
-
-    elif admin_state == 'update_vip_price':
-        catalog['vip_bundle']['price'] = input_text
-        save_catalog(catalog)
-        await update.message.reply_text(get_text(user_id, 'vip_price_updated', price=input_text))
-        context.user_data['admin_state'] = None
-        await admin_panel(update, context)
-
-    elif admin_state == 'awaiting_broadcast_message':
-        context.user_data['broadcast_message'] = input_text
-        all_users = get_all_users()
-        user_count = len(all_users)
-        keyboard = [
-            [InlineKeyboardButton(get_text(user_id, 'confirm'), callback_data="admin_broadcast_confirm")],
-            [InlineKeyboardButton(get_text(user_id, 'cancel'), callback_data="admin_broadcast_cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(get_text(user_id, 'confirm_broadcast', user_count=user_count), reply_markup=reply_markup)
-        context.user_data['admin_state'] = 'confirming_broadcast'
-
-    else:
-        await update.message.reply_text(get_text(user_id, 'invalid_input'))
-
-
-
 async def handle_search_query(update: Update, context):
     user_id = update.effective_user.id
     if context.user_data.get('state') == 'awaiting_search_query':
         query_text = update.message.text.lower()
-        catalog = load_catalog()
-        results = [s for s in catalog['series'] if query_text in s['title'].lower() or query_text in s['description'].lower()]
+        series_list = get_all_series()
+        results = [s for s in series_list if query_text in s['title'].lower() or query_text in s['description'].lower()]
 
         if results:
             for series in results:
@@ -478,17 +507,18 @@ async def handle_search_query(update: Update, context):
                 await update.message.reply_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
         else:
             await update.message.reply_text(get_text(user_id, 'no_series_found'))
-        context.user_data['state'] = None # Reset state
-        await main_menu(update, context) # Return to main menu after search
+        context.user_data['state'] = None
+        await main_menu(update, context)
 
 async def prices_command(update: Update, context):
     user_id = update.effective_user.id
-    catalog = load_catalog()
+    series_list = get_all_series()
+    vip_info = get_vip_bundle()
+    
     pricing_text = get_text(user_id, 'full_pricing')
-
-    for series in catalog['series']:
+    for series in series_list:
         pricing_text += f"- **{series['title']}**: {series['price']}\n"
-    pricing_text += f"- **VIP Bundle**: {catalog['vip_bundle']['price']}\n"
+    pricing_text += f"- **VIP Bundle**: {vip_info['price']}\n"
 
     keyboard = [
         [InlineKeyboardButton(get_text(user_id, 'back_to_main_menu'), callback_data="main_menu")]
@@ -496,14 +526,15 @@ async def prices_command(update: Update, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(text=pricing_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-# --- Admin Handlers ---
+# ========== Admin Handlers ==========
 
 async def admin_check(update: Update, context):
     return update.effective_user.id in ADMIN_IDS
 
 async def admin_panel(update: Update, context):
     if not await admin_check(update, context):
-        await update.message.reply_text(get_text(update.effective_user.id, 'not_admin'))
+        if update.message:
+            await update.message.reply_text(get_text(update.effective_user.id, 'not_admin'))
         return
 
     user_id = update.effective_user.id
@@ -534,9 +565,9 @@ async def admin_edit_series_select(update: Update, context):
     if not await admin_check(update, context):
         return
     user_id = update.effective_user.id
-    catalog = load_catalog()
+    series_list = get_all_series()
     series_buttons = []
-    for series in catalog['series']:
+    for series in series_list:
         series_buttons.append([InlineKeyboardButton(series['title'], callback_data=f"admin_edit_series_{series['id']}")])
     series_buttons.append([InlineKeyboardButton(get_text(user_id, 'back_to_admin_panel'), callback_data="admin_panel")])
     reply_markup = InlineKeyboardMarkup(series_buttons)
@@ -548,13 +579,12 @@ async def admin_edit_series_start(update: Update, context):
     query = update.callback_query
     user_id = query.from_user.id
     series_id = query.data.split('_')[-1]
-    catalog = load_catalog()
-    series = next((s for s in catalog['series'] if s['id'] == series_id), None)
+    series = get_series_by_id(series_id)
 
     if series:
         context.user_data['admin_state'] = 'edit_series_description'
         context.user_data['current_series_id'] = series_id
-        context.user_data['current_series_data'] = series # Store current data for editing
+        context.user_data['current_series_data'] = series
         await query.edit_message_text(get_text(user_id, 'enter_series_description'))
     else:
         await query.edit_message_text(get_text(user_id, 'series_not_found'))
@@ -563,9 +593,9 @@ async def admin_remove_series_select(update: Update, context):
     if not await admin_check(update, context):
         return
     user_id = update.effective_user.id
-    catalog = load_catalog()
+    series_list = get_all_series()
     series_buttons = []
-    for series in catalog['series']:
+    for series in series_list:
         series_buttons.append([InlineKeyboardButton(series['title'], callback_data=f"admin_remove_series_{series['id']}")])
     series_buttons.append([InlineKeyboardButton(get_text(user_id, 'back_to_admin_panel'), callback_data="admin_panel")])
     reply_markup = InlineKeyboardMarkup(series_buttons)
@@ -577,12 +607,11 @@ async def admin_remove_series_confirm(update: Update, context):
     query = update.callback_query
     user_id = query.from_user.id
     series_id = query.data.split('_')[-1]
-    catalog = load_catalog()
-    original_len = len(catalog['series'])
-    catalog['series'] = [s for s in catalog['series'] if s['id'] != series_id]
-    if len(catalog['series']) < original_len:
-        save_catalog(catalog)
-        await query.edit_message_text(get_text(user_id, 'series_removed', title=series_id))
+    
+    series = get_series_by_id(series_id)
+    if series:
+        delete_series(series_id)
+        await query.edit_message_text(get_text(user_id, 'series_removed', title=series['title']))
     else:
         await query.edit_message_text(get_text(user_id, 'series_not_found'))
     await admin_panel(update, context)
@@ -600,51 +629,6 @@ async def admin_broadcast_message_start(update: Update, context):
     user_id = update.effective_user.id
     context.user_data['admin_state'] = 'awaiting_broadcast_message'
     await update.callback_query.edit_message_text(get_text(user_id, 'enter_broadcast_message'))
-
-async def admin_view_stats(update: Update, context):
-    if not await admin_check(update, context):
-        return
-    user_id = update.effective_user.id
-    total_users = len(get_all_users())
-    active_users = get_active_users_last_7_days()
-    series_clicks_data = get_contact_clicks_per_series()
-
-    series_clicks_str = ""
-    for series_id, count in series_clicks_data:
-        # Try to get series title from catalog, fallback to ID
-        catalog = load_catalog()
-        series_title = next((s['title'] for s in catalog['series'] if s['id'] == series_id), series_id)
-        if series_id == "vip_bundle":
-            series_title = "VIP Bundle"
-        series_clicks_str += f"- {series_title}: {count}\n"
-
-    text = get_text(user_id, 'stats_report',
-                    total_users=total_users,
-                    active_users=active_users,
-                    series_clicks=series_clicks_str)
-    keyboard = [
-        [InlineKeyboardButton(get_text(user_id, 'back_to_admin_panel'), callback_data="admin_panel")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def admin_export_users(update: Update, context):
-    if not await admin_check(update, context):
-        return
-    user_id = update.effective_user.id
-    users = get_all_users()
-    csv_content = "user_id,username,language\n"
-    for uid, uname, lang in users:
-        csv_content += f"{uid},{uname or ''},{lang}\n"
-
-    with open("users.csv", "w", encoding="utf-8") as f:
-        f.write(csv_content)
-
-    await context.bot.send_document(chat_id=user_id, document=open("users.csv", "rb"),
-                                    caption=get_text(user_id, 'export_success'))
-    await admin_panel(update, context)
-
-
 
 async def admin_broadcast_confirm(update: Update, context):
     if not await admin_check(update, context):
@@ -680,6 +664,137 @@ async def admin_broadcast_cancel(update: Update, context):
     context.user_data['broadcast_message'] = None
     await admin_panel(update, context)
 
+async def admin_view_stats(update: Update, context):
+    if not await admin_check(update, context):
+        return
+    user_id = update.effective_user.id
+    total_users = len(get_all_users())
+    active_users = get_active_users_last_7_days()
+    series_clicks_data = get_contact_clicks_per_series()
+
+    series_clicks_str = ""
+    for series_id, count in series_clicks_data:
+        if series_id == "vip_bundle":
+            series_title = "VIP Bundle"
+        else:
+            series = get_series_by_id(series_id)
+            series_title = series['title'] if series else series_id
+        series_clicks_str += f"- {series_title}: {count}\n"
+
+    text = get_text(user_id, 'stats_report',
+                    total_users=total_users,
+                    active_users=active_users,
+                    series_clicks=series_clicks_str)
+    keyboard = [
+        [InlineKeyboardButton(get_text(user_id, 'back_to_admin_panel'), callback_data="admin_panel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
+
+async def admin_export_users(update: Update, context):
+    if not await admin_check(update, context):
+        return
+    user_id = update.effective_user.id
+    users = get_all_users()
+    csv_content = "user_id,username,language\n"
+    for uid, uname, lang in users:
+        csv_content += f"{uid},{uname or ''},{lang}\n"
+
+    with open(os.path.join(BASE_DIR, "users.csv"), "w", encoding="utf-8") as f:
+        f.write(csv_content)
+
+    await context.bot.send_document(chat_id=user_id, document=open(os.path.join(BASE_DIR, "users.csv"), "rb"),
+                                    caption=get_text(user_id, 'export_success'))
+    await admin_panel(update, context)
+
+async def handle_admin_input(update: Update, context):
+    user_id = update.effective_user.id
+    admin_state = context.user_data.get("admin_state")
+    input_text = update.message.text
+
+    if admin_state == 'add_series_title':
+        series_id = re.sub(r'[^a-z0-9_]', '', input_text.lower().replace(' ', '_'))
+        context.user_data['new_series'] = {'id': series_id, 'title': input_text}
+        context.user_data['admin_state'] = 'add_series_description'
+        await update.message.reply_text(get_text(user_id, 'enter_series_description'))
+        
+    elif admin_state == 'add_series_description':
+        context.user_data['new_series']['description'] = input_text
+        context.user_data['admin_state'] = 'add_series_price'
+        await update.message.reply_text(get_text(user_id, 'enter_series_price'))
+        
+    elif admin_state == 'add_series_price':
+        context.user_data['new_series']['price'] = input_text
+        context.user_data['admin_state'] = 'add_series_link'
+        await update.message.reply_text(get_text(user_id, 'enter_series_link'))
+        
+    elif admin_state == 'add_series_link':
+        context.user_data['new_series']['link'] = input_text
+        new_series = context.user_data['new_series']
+        add_series(new_series['id'], new_series['title'], new_series['description'], new_series['price'], new_series['link'])
+        await update.message.reply_text(get_text(user_id, 'series_added', title=new_series['title']))
+        context.user_data['admin_state'] = None
+        await admin_panel(update, context)
+
+    elif admin_state == 'edit_series_description':
+        series_id = context.user_data['current_series_id']
+        series = get_series_by_id(series_id)
+        if series:
+            series['description'] = input_text
+            add_series(series['id'], series['title'], series['description'], series['price'], series['link'])
+            context.user_data['admin_state'] = 'edit_series_price'
+            await update.message.reply_text(get_text(user_id, 'enter_series_price'))
+        else:
+            await update.message.reply_text(get_text(user_id, 'series_not_found'))
+            
+    elif admin_state == 'edit_series_price':
+        series_id = context.user_data['current_series_id']
+        series = get_series_by_id(series_id)
+        if series:
+            series['price'] = input_text
+            add_series(series['id'], series['title'], series['description'], series['price'], series['link'])
+            context.user_data['admin_state'] = 'edit_series_link'
+            await update.message.reply_text(get_text(user_id, 'enter_series_link'))
+        else:
+            await update.message.reply_text(get_text(user_id, 'series_not_found'))
+            
+    elif admin_state == 'edit_series_link':
+        series_id = context.user_data['current_series_id']
+        series = get_series_by_id(series_id)
+        if series:
+            series['link'] = input_text
+            add_series(series['id'], series['title'], series['description'], series['price'], series['link'])
+            await update.message.reply_text(get_text(user_id, 'series_added', title=series['title']))
+            context.user_data['admin_state'] = None
+            context.user_data['current_series_id'] = None
+            context.user_data['current_series_data'] = None
+            await admin_panel(update, context)
+        else:
+            await update.message.reply_text(get_text(user_id, 'series_not_found'))
+
+    elif admin_state == 'update_vip_price':
+        current_vip = get_vip_bundle()
+        update_vip_bundle(input_text, current_vip['description'])
+        await update.message.reply_text(get_text(user_id, 'vip_price_updated', price=input_text))
+        context.user_data['admin_state'] = None
+        await admin_panel(update, context)
+
+    elif admin_state == 'awaiting_broadcast_message':
+        context.user_data['broadcast_message'] = input_text
+        all_users = get_all_users()
+        user_count = len(all_users)
+        keyboard = [
+            [InlineKeyboardButton(get_text(user_id, 'confirm'), callback_data="admin_broadcast_confirm")],
+            [InlineKeyboardButton(get_text(user_id, 'cancel'), callback_data="admin_broadcast_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(get_text(user_id, 'confirm_broadcast', user_count=user_count), reply_markup=reply_markup)
+        context.user_data['admin_state'] = 'confirming_broadcast'
+
+    else:
+        await update.message.reply_text(get_text(user_id, 'invalid_input'))
+
+# ========== Main ==========
 
 def main():
     init_db()
@@ -689,6 +804,8 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("prices", prices_command))
+    application.add_handler(CommandHandler("admin", admin_panel))
+    
     application.add_handler(CallbackQueryHandler(set_language, pattern="^set_lang_.*"))
     application.add_handler(CallbackQueryHandler(main_menu, pattern="^main_menu$"))
     application.add_handler(CallbackQueryHandler(browse_catalog, pattern="^browse_catalog$"))
@@ -699,8 +816,7 @@ def main():
     application.add_handler(CallbackQueryHandler(change_language_menu, pattern="^change_language_menu$"))
     application.add_handler(CallbackQueryHandler(help_menu, pattern="^help$"))
 
-    # Admin commands and callbacks
-    application.add_handler(CommandHandler("admin", admin_panel))
+    # Admin callbacks
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
     application.add_handler(CallbackQueryHandler(admin_add_series_start, pattern="^admin_add_series$"))
     application.add_handler(CallbackQueryHandler(admin_edit_series_select, pattern="^admin_edit_series_select$"))
@@ -714,10 +830,8 @@ def main():
     application.add_handler(CallbackQueryHandler(admin_broadcast_confirm, pattern="^admin_broadcast_confirm$"))
     application.add_handler(CallbackQueryHandler(admin_broadcast_cancel, pattern="^admin_broadcast_cancel$"))
 
-    # Message handler for states (e.g., search query, admin input)
+    # Message handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message_input))
-
-
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
