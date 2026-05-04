@@ -1,0 +1,64 @@
+{
+  "series": [
+    {
+      "id": "boondocks",
+      "title": "The Boondocks",
+      "description": "A satirical animated series about a black family, the Freemans, settling into the fictional, white suburb of Woodcrest.",
+      "price": "5,000 MMK",
+      "link": "https://t.me/animationbyasa/753"
+    },
+    {
+      "id": "smiling_friends",
+      "title": "Smiling Friends",
+      "description": "Follows the employees of a small company dedicated to bringing happiness to a bizarre yet colorful world.",
+      "price": "5,000 MMK",
+      "link": "https://t.me/animationbyasa/753"
+    },
+    {
+      "id": "scavengers_reign",
+      "title": "Scavengers Reign",
+      "description": "The survivors of a damaged deep-space freighter are stranded on a beautiful yet unforgiving alien planet.",
+      "price": "5,000 MMK",
+      "link": "https://t.me/animationbyasa/753"
+    },
+    {
+      "id": "fionna_and_cake",
+      "title": "Fionna and Cake",
+      "description": "Fionna and Cake—with the help of the former Ice King, Simon Petrikov—embark on a multiverse-hopping adventure.",
+      "price": "5,000 MMK",
+      "link": "https://t.me/animationbyasa/751"
+    },
+    {
+      "id": "adventure_time",
+      "title": "Adventure Time",
+      "description": "A young boy named Finn and his best friend Jake, a dog with magical powers, go on adventures in the Land of Ooo.",
+      "price": "5,000 MMK",
+      "link": "https://t.me/animationbyasa/752"
+    },
+    {
+      "id": "over_the_garden_wall",
+      "title": "Over the Garden Wall",
+      "description": "Two half-brothers travel across a mysterious forest to find their way home, encountering strange and wonderful things.",
+      "price": "5,000 MMK",
+      "link": "https://t.me/animationbyasa/753"
+    },
+    {
+      "id": "bojack_horseman",
+      "title": "Bojack Horseman",
+      "description": "BoJack Horseman, the washed-up star of the 1990s sitcom 'Horsin' Around,' navigates life with his human sidekick Todd and feline agent Princess Carolyn.",
+      "price": "Name your price / contact owner",
+      "link": "https://t.me/animationbyasa/753"
+    },
+    {
+      "id": "family_guy_s23",
+      "title": "Family Guy Season 23",
+      "description": "The latest adventures of the Griffin family in Quahog.",
+      "price": "Name your price / contact owner",
+      "link": "https://t.me/animationbyasa/753"
+    }
+  ],
+  "vip_bundle": {
+    "price": "25,000 MMK",
+    "description": "Get lifetime access to all 6 standard series (The Boondocks, Smiling Friends, Scavengers Reign, Fionna and Cake, Adventure Time, Over the Garden Wall)."
+  }
+}
